@@ -28,7 +28,7 @@ public class ClerkOrganizationService
 
     public async Task<ClerkOrg?> CreateOrganizationAsync(string name, string slug, string createdBy)
     {
-        var body = new { name, slug, created_by = createdBy };
+        var body = new { name, created_by = createdBy };
         var response = await PostAsync<ClerkOrg>("organizations", body);
         _logger.LogInformation("Created Clerk Organization: {OrgId} ({Name})", response?.Id, name);
         return response;
