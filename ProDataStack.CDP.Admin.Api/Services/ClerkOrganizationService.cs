@@ -59,13 +59,13 @@ public class ClerkOrganizationService
     }
 
     /// <summary>
-    /// Find a Clerk Organization by slug. Returns null if not found.
+    /// Find a Clerk Organization by exact name. Returns null if not found.
     /// </summary>
-    public async Task<ClerkOrg?> FindOrganizationBySlugAsync(string slug)
+    public async Task<ClerkOrg?> FindOrganizationByNameAsync(string name)
     {
-        var result = await GetAsync<ClerkOrgList>($"organizations?query={slug}&limit=10");
+        var result = await GetAsync<ClerkOrgList>($"organizations?query={Uri.EscapeDataString(name)}&limit=10");
         return result?.Data?.FirstOrDefault(o =>
-            string.Equals(o.Slug, slug, StringComparison.OrdinalIgnoreCase));
+            string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<T?> PostAsync<T>(string path, object body)

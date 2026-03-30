@@ -13,7 +13,7 @@ namespace ProDataStack.CDP.Admin.Api.Controllers;
 [Route("api/v1/[controller]")]
 public class AdministratorsController : ControllerBase
 {
-    private const string PlatformOrgSlug = "prodatastack";
+    private const string PlatformOrgName = "ProDataStack";
     private const string RequiredEmailDomain = "@prodatastack.com";
 
     private readonly ClerkOrganizationService _clerkService;
@@ -36,7 +36,7 @@ public class AdministratorsController : ControllerBase
     [ProducesResponseType(typeof(List<TenantUserResponse>), StatusCodes.Status200OK)]
     public async Task<ActionResult<List<TenantUserResponse>>> ListAdministrators()
     {
-        var orgId = await ResolvePlatformOrgIdAsync();
+        var orgId = await ResolvePlatformOrgIdAsync(PlatformOrgName);
         if (orgId == null)
             return StatusCode(503, new { error = "ProDataStack organisation not found in identity provider. Has it been created?" });
 
@@ -80,7 +80,7 @@ public class AdministratorsController : ControllerBase
         if (!request.EmailAddress.EndsWith(RequiredEmailDomain, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = $"Email address must be {RequiredEmailDomain}" });
 
-        var orgId = await ResolvePlatformOrgIdAsync();
+        var orgId = await ResolvePlatformOrgIdAsync(PlatformOrgName);
         if (orgId == null)
             return StatusCode(503, new { error = "ProDataStack organisation not found in identity provider" });
 
@@ -106,7 +106,7 @@ public class AdministratorsController : ControllerBase
         if (!IsOrgAdmin())
             return Forbid();
 
-        var orgId = await ResolvePlatformOrgIdAsync();
+        var orgId = await ResolvePlatformOrgIdAsync(PlatformOrgName);
         if (orgId == null)
             return StatusCode(503, new { error = "ProDataStack organisation not found in identity provider" });
 
@@ -129,7 +129,7 @@ public class AdministratorsController : ControllerBase
         return orgRole == "org:admin";
     }
 
-    private async Task<string?> ResolvePlatformOrgIdAsync()
+    private async Task<string?> ResolvePlatformOrgIdAsync(string orgName)
     {
         if (_cachedPlatformOrgId != null)
             return _cachedPlatformOrgId;
@@ -137,11 +137,10 @@ public class AdministratorsController : ControllerBase
         await OrgIdLock.WaitAsync();
         try
         {
-            // Double-check after acquiring lock
             if (_cachedPlatformOrgId != null)
                 return _cachedPlatformOrgId;
 
-            var org = await _clerkService.FindOrganizationBySlugAsync(PlatformOrgSlug);
+            var org = await _clerkService.FindOrganizationByNameAsync(orgName);
             if (org != null)
             {
                 _cachedPlatformOrgId = org.Id;
