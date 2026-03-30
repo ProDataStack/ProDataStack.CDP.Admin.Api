@@ -107,7 +107,7 @@ jobs:
           az keyvault secret set \
             --name TenantCatalogDatabaseConnection \
             --vault-name "$VAULT_NAME" \
-            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};User Id=${{ vars.APPLICATION_DATABASE_USER }};Password=${{ secrets.APPLICATION_DATABASE_PASSWORD }};TrustServerCertificate=False;Encrypt=True;"
+            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};Authentication=Active Directory Default;TrustServerCertificate=False;Encrypt=True;"
 
           az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
           az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
@@ -262,7 +262,7 @@ jobs:
           az keyvault secret set \
             --name TenantCatalogDatabaseConnection \
             --vault-name "$VAULT_NAME" \
-            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};User Id=${{ vars.APPLICATION_DATABASE_USER }};Password=${{ secrets.APPLICATION_DATABASE_PASSWORD }};TrustServerCertificate=False;Encrypt=True;"
+            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};Authentication=Active Directory Default;TrustServerCertificate=False;Encrypt=True;"
 
           az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
           az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
