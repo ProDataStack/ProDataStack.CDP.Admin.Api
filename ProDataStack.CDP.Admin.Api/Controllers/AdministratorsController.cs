@@ -43,17 +43,19 @@ public class AdministratorsController : ControllerBase
         try
         {
             var members = await _clerkService.ListMembersAsync(orgId);
-            var admins = members.Select(m => new TenantUserResponse
-            {
-                UserId = m.PublicUserData?.UserId ?? m.Id,
-                Email = m.PublicUserData?.Identifier,
-                FirstName = m.PublicUserData?.FirstName,
-                LastName = m.PublicUserData?.LastName,
-                Role = m.Role,
-                JoinedAt = m.CreatedAt.HasValue
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(m.CreatedAt.Value)
-                    : null
-            }).ToList();
+            var admins = members
+                .Where(m => m.Role == "org:admin")
+                .Select(m => new TenantUserResponse
+                {
+                    UserId = m.PublicUserData?.UserId ?? m.Id,
+                    Email = m.PublicUserData?.Identifier,
+                    FirstName = m.PublicUserData?.FirstName,
+                    LastName = m.PublicUserData?.LastName,
+                    Role = m.Role,
+                    JoinedAt = m.CreatedAt.HasValue
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(m.CreatedAt.Value)
+                        : null
+                }).ToList();
 
             return Ok(admins);
         }
