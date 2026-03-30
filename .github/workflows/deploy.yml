@@ -1,0 +1,358 @@
+name: Deploy CDP Admin API
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - both
+          - testing
+          - production
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg GITHUB_TOKEN=${{ secrets.NUGET_TOKEN }} \
+            -t cdp.admin.api:${{ github.run_number }} \
+            -f ProDataStack.CDP.Admin.Api/Dockerfile \
+            .
+
+      - name: Save Docker image
+        run: |
+          docker save cdp.admin.api:${{ github.run_number }} -o cdp.admin.api.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: cdp.admin.api.tar
+          retention-days: 1
+
+  deploy-testing:
+    name: Deploy to Testing
+    needs: build
+    runs-on: ubuntu-latest
+    environment: Testing
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.environment == 'testing' || inputs.environment == 'both'))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set environment variables
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+
+      - name: Add secrets to Key Vault
+        run: |
+          VAULT_NAME="cdp-admin-api-test"
+          RESOURCE_GROUP="cdp-admin-api"
+
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "Runner IP: $RUNNER_IP"
+
+          az keyvault network-rule add --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
+
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if az keyvault network-rule list --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --query "ipRules[?contains(value, '$RUNNER_IP')].value" -o tsv | grep -q "$RUNNER_IP"; then
+              echo "Firewall rule confirmed active"
+              break
+            fi
+            echo "Waiting for rule to propagate (attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)..."
+            sleep 2
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          az keyvault secret set \
+            --name TenantCatalogDatabaseConnection \
+            --vault-name "$VAULT_NAME" \
+            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};User Id=${{ vars.APPLICATION_DATABASE_USER }};Password=${{ secrets.APPLICATION_DATABASE_PASSWORD }};TrustServerCertificate=False;Encrypt=True;"
+
+          az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
+          az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
+
+          az keyvault network-rule remove --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
+
+      - name: Load Docker image
+        run: docker load -i cdp.admin.api.tar
+
+      - name: Add runner IP to ACR network rules
+        run: |
+          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az acr network-rule add --name "$ACR_NAME" --ip-address "$RUNNER_IP"
+          sleep 10
+
+      - name: Log in to Azure Container Registry
+        run: |
+          for i in 1 2 3 4 5; do
+            az acr login --name ${{ vars.CONTAINER_REGISTRY_NAME }} && break
+            echo "ACR login attempt $i failed, retrying in 15 seconds..."
+            sleep 15
+          done
+
+      - name: Tag and push Docker image
+        run: |
+          docker tag cdp.admin.api:${{ github.run_number }} ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
+          docker push ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
+
+      - name: Remove runner IP from ACR network rules
+        if: always()
+        run: |
+          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az acr network-rule remove --name "$ACR_NAME" --ip-address "$RUNNER_IP" || true
+
+      - name: Set AKS context
+        run: |
+          az aks get-credentials \
+            --resource-group prodatastack_shared \
+            --name prodatastack-cluster \
+            --overwrite-existing
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.13.0'
+
+      - name: Replace tokens in Helm values
+        run: |
+          sed -i "s|__ContainerRegistry__|${{ vars.CONTAINER_REGISTRY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__repository__|cdp.admin.api|g" Deployment/helm/values.yaml
+          sed -i "s|__tag__|${{ github.run_number }}|g" Deployment/helm/values.yaml
+          sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
+          sed -i "s|__Environment__|testing|g" Deployment/helm/values.yaml
+          sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
+          sed -i "s|__HostName__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
+          sed -i "s|__KeyVaultName__|cdp-admin-api-test|g" Deployment/helm/values.yaml
+          sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
+          sed -i "s|__AzureServiceBusConnectionString__|${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sReplicaCount__|1|g" Deployment/helm/values.yaml
+          sed -i "s|__ApplicationInsightsConnectionString__|${{ secrets.APPLICATION_INSIGHTS_CONNECTION_STRING }}|g" Deployment/helm/values.yaml
+          sed -i "s|__AuthenticationMode__|${{ vars.AUTHENTICATION_MODE }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkPublishableKey__|${{ vars.CLERK_PUBLISHABLE_KEY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkIssuer__|${{ vars.CLERK_ISSUER }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkJwksUrl__|${{ vars.CLERK_JWKS_URL }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkAuthorizedParty__|${{ vars.CLERK_AUTHORIZED_PARTY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceRequestsMemory__|96Mi|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceRequestsCpu__|10m|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceLimitsMemory__|256Mi|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceLimitsCpu__|200m|g" Deployment/helm/values.yaml
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install cdp-admin-api-release \
+            ./Deployment/helm \
+            --namespace cdp \
+            --wait \
+            --timeout 10m
+
+      - name: Get pod name on failure
+        if: failure()
+        id: get-pod
+        run: |
+          POD_NAME=$(kubectl get pods -n cdp -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          echo "pod_name=$POD_NAME" >> $GITHUB_OUTPUT
+
+      - name: Get pod logs on failure
+        if: failure() && steps.get-pod.outputs.pod_name != ''
+        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp --tail=100 || true
+
+      - name: Describe pod on failure
+        if: failure() && steps.get-pod.outputs.pod_name != ''
+        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp || true
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [build, deploy-testing]
+    runs-on: ubuntu-latest
+    environment: Production
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production') ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'both' && needs.deploy-testing.result == 'success')
+      )
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set environment variables
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+
+      - name: Add secrets to Key Vault
+        run: |
+          VAULT_NAME="cdp-admin-api-prod"
+          RESOURCE_GROUP="cdp-admin-api"
+
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az keyvault network-rule add --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
+
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if az keyvault network-rule list --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --query "ipRules[?contains(value, '$RUNNER_IP')].value" -o tsv | grep -q "$RUNNER_IP"; then
+              break
+            fi
+            sleep 2
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          az keyvault secret set \
+            --name TenantCatalogDatabaseConnection \
+            --vault-name "$VAULT_NAME" \
+            --value "Server=${{ vars.DATABASE_SERVER }};Database=${{ vars.APPLICATION_DATABASE }};User Id=${{ vars.APPLICATION_DATABASE_USER }};Password=${{ secrets.APPLICATION_DATABASE_PASSWORD }};TrustServerCertificate=False;Encrypt=True;"
+
+          az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
+          az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
+
+          az keyvault network-rule remove --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
+
+      - name: Load Docker image
+        run: docker load -i cdp.admin.api.tar
+
+      - name: Add runner IP to ACR network rules
+        run: |
+          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az acr network-rule add --name "$ACR_NAME" --ip-address "$RUNNER_IP"
+          sleep 10
+
+      - name: Log in to Azure Container Registry
+        run: |
+          for i in 1 2 3 4 5; do
+            az acr login --name ${{ vars.CONTAINER_REGISTRY_NAME }} && break
+            sleep 15
+          done
+
+      - name: Tag and push Docker image
+        run: |
+          docker tag cdp.admin.api:${{ github.run_number }} ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
+          docker push ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
+
+      - name: Remove runner IP from ACR network rules
+        if: always()
+        run: |
+          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az acr network-rule remove --name "$ACR_NAME" --ip-address "$RUNNER_IP" || true
+
+      - name: Set AKS context
+        run: |
+          az aks get-credentials \
+            --resource-group prodatastack_shared \
+            --name prodatastack-cluster \
+            --overwrite-existing
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.13.0'
+
+      - name: Replace tokens in Helm values
+        run: |
+          sed -i "s|__ContainerRegistry__|${{ vars.CONTAINER_REGISTRY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__repository__|cdp.admin.api|g" Deployment/helm/values.yaml
+          sed -i "s|__tag__|${{ github.run_number }}|g" Deployment/helm/values.yaml
+          sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
+          sed -i "s|__Environment__|production|g" Deployment/helm/values.yaml
+          sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
+          sed -i "s|__HostName__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
+          sed -i "s|__KeyVaultName__|cdp-admin-api-prod|g" Deployment/helm/values.yaml
+          sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
+          sed -i "s|__AzureServiceBusConnectionString__|${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sReplicaCount__|1|g" Deployment/helm/values.yaml
+          sed -i "s|__ApplicationInsightsConnectionString__|${{ secrets.APPLICATION_INSIGHTS_CONNECTION_STRING }}|g" Deployment/helm/values.yaml
+          sed -i "s|__AuthenticationMode__|${{ vars.AUTHENTICATION_MODE }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkPublishableKey__|${{ vars.CLERK_PUBLISHABLE_KEY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkIssuer__|${{ vars.CLERK_ISSUER }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkJwksUrl__|${{ vars.CLERK_JWKS_URL }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ClerkAuthorizedParty__|${{ vars.CLERK_AUTHORIZED_PARTY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceRequestsMemory__|256Mi|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceRequestsCpu__|50m|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceLimitsMemory__|512Mi|g" Deployment/helm/values.yaml
+          sed -i "s|__K8sResourceLimitsCpu__|500m|g" Deployment/helm/values.yaml
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install cdp-admin-api-release \
+            ./Deployment/helm \
+            --namespace cdp \
+            --wait \
+            --timeout 10m
+
+      - name: Get pod name on failure
+        if: failure()
+        id: get-pod
+        run: |
+          POD_NAME=$(kubectl get pods -n cdp -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          echo "pod_name=$POD_NAME" >> $GITHUB_OUTPUT
+
+      - name: Get pod logs on failure
+        if: failure() && steps.get-pod.outputs.pod_name != ''
+        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp --tail=100 || true
+
+      - name: Describe pod on failure
+        if: failure() && steps.get-pod.outputs.pod_name != ''
+        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp || true

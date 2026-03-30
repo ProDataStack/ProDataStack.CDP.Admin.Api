@@ -1,0 +1,33 @@
+image:
+  containerRegistry: __ContainerRegistry__
+  repository: __repository__
+  pullPolicy: Always
+  tag: __tag__
+appName: __AppName__
+environment: __Environment__
+serviceName: __ServiceName__
+hostName: __HostName__
+keyVault:
+  name: __KeyVaultName__
+  tenantId: __TenantId__
+clientId: __ServicePrincipalClientId__
+serviceBus:
+  connectionString: __AzureServiceBusConnectionString__
+kubernetes:
+  replicaCount: __K8sReplicaCount__
+azureMonitor:
+  connectionString: __ApplicationInsightsConnectionString__
+authentication:
+  mode: __AuthenticationMode__
+clerk:
+  publishableKey: __ClerkPublishableKey__
+  issuer: __ClerkIssuer__
+  jwksUrl: __ClerkJwksUrl__
+  authorizedParty: __ClerkAuthorizedParty__
+resources:
+  requests:
+    memory: __K8sResourceRequestsMemory__
+    cpu: __K8sResourceRequestsCpu__
+  limits:
+    memory: __K8sResourceLimitsMemory__
+    cpu: __K8sResourceLimitsCpu__

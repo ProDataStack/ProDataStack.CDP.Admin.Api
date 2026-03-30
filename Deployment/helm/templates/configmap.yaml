@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.appName }}-configmap
+  namespace: cdp
+data:
+  AMQP__AzureServiceBus__ConnectionString: "{{ .Values.serviceBus.connectionString }}"
+  AzureMonitor__ConnectionString: "{{ .Values.azureMonitor.connectionString }}"
+  Authentication__Mode: "{{ .Values.authentication.mode }}"
+  APPLICATIONINSIGHTS_CONNECTION_STRING: "{{ .Values.azureMonitor.connectionString }}"
+  Clerk__PublishableKey: "{{ .Values.clerk.publishableKey }}"
+  Clerk__Issuer: "{{ .Values.clerk.issuer }}"
+  Clerk__JwksUrl: "{{ .Values.clerk.jwksUrl }}"
+  Clerk__AuthorizedParty: "{{ .Values.clerk.authorizedParty }}"
+  Logging__LogLevel__Default: "Warning"
+  Logging__LogLevel__Microsoft.AspNetCore: "Warning"

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.appName }}-deployment
+  namespace: cdp
+spec:
+  replicas: {{ .Values.kubernetes.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.appName }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.appName }}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ .Values.appName }}-serviceaccount
+      nodeSelector:
+        workload-type: user
+      containers:
+      - name: {{ .Values.appName }}
+        image: {{ .Values.image.containerRegistry}}/{{ .Values.image.repository }}:{{.Values.image.tag}}
+        env:
+          - name: ASPNETCORE_ENVIRONMENT
+            value: {{ .Values.environment }}
+          - name: ASPNETCORE_HTTP_PORTS
+            value: "80"
+          - name: ConnectionStrings__TenantCatalog
+            valueFrom:
+              secretKeyRef:
+                name: adminapicredentials
+                key: TenantCatalogConnection
+          - name: Clerk__SecretKey
+            valueFrom:
+              secretKeyRef:
+                name: clerkcredentials
+                key: SecretKey
+          - name: Clerk__WebhookSecret
+            valueFrom:
+              secretKeyRef:
+                name: clerkcredentials
+                key: WebhookSecret
+          - name: DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
+            value: "false"
+          - name: LANG
+            value: "en_GB.UTF-8"
+          - name: LC_ALL
+            value: "en_GB.UTF-8"
+        volumeMounts:
+        - name: keyvault
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: {{ .Values.resources.requests.memory | quote }}
+            cpu: {{ .Values.resources.requests.cpu | quote }}
+          limits:
+            memory: {{ .Values.resources.limits.memory | quote }}
+            cpu: {{ .Values.resources.limits.cpu | quote }}
+        envFrom:
+          - configMapRef:
+              name: {{ .Values.appName }}-configmap
+      volumes:
+        - name: keyvault
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "{{ .Values.appName }}-secrets"
