@@ -31,3 +31,8 @@ public record TenantUserResponse
     public string? Role { get; init; }
     public DateTimeOffset? JoinedAt { get; init; }
 }
+
+public record InviteAdministratorRequest
+{
+    public required string EmailAddress { get; init; }
+}
