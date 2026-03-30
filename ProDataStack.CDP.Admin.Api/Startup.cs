@@ -22,6 +22,7 @@ namespace ProDataStack.CDP.Admin.Api
 
         public override void ConfigureComponent(IApplicationBuilder app)
         {
+            app.UseDeveloperExceptionPage();
         }
 
         public override void ConfigureComponentServices(IServiceCollection services)
