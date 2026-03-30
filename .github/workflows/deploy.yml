@@ -111,6 +111,7 @@ jobs:
 
           az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
           az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
+          az keyvault secret set --name GitHubToken --vault-name "$VAULT_NAME" --value "${{ secrets.GITHUB_PROVISIONING_TOKEN }}"
 
           az keyvault network-rule remove --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
 
@@ -265,6 +266,7 @@ jobs:
 
           az keyvault secret set --name ClerkSecretKey --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_SECRET_KEY }}"
           az keyvault secret set --name ClerkWebhookSecret --vault-name "$VAULT_NAME" --value "${{ secrets.CLERK_WEBHOOK_SECRET }}"
+          az keyvault secret set --name GitHubToken --vault-name "$VAULT_NAME" --value "${{ secrets.GITHUB_PROVISIONING_TOKEN }}"
 
           az keyvault network-rule remove --name "$VAULT_NAME" --resource-group "$RESOURCE_GROUP" --ip-address "$RUNNER_IP"
 

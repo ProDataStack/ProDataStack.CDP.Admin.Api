@@ -40,6 +40,11 @@ spec:
               secretKeyRef:
                 name: clerkcredentials
                 key: WebhookSecret
+          - name: GitHub__Token
+            valueFrom:
+              secretKeyRef:
+                name: githubcredentials
+                key: Token
           - name: DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
             value: "false"
           - name: LANG

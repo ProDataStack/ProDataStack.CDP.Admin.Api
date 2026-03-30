@@ -12,5 +12,8 @@ data:
   Clerk__Issuer: "{{ .Values.clerk.issuer }}"
   Clerk__JwksUrl: "{{ .Values.clerk.jwksUrl }}"
   Clerk__AuthorizedParty: "{{ .Values.clerk.authorizedParty }}"
+  Provisioning__Environment: "{{ .Values.environment }}"
+  Provisioning__Repo: "ProDataStack/ProDataStack.CDP.TenantProvisioning"
+  Provisioning__WorkflowFile: "provision-tenant.yml"
   Logging__LogLevel__Default: "Warning"
   Logging__LogLevel__Microsoft.AspNetCore: "Warning"

@@ -1,26 +1,237 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using ProDataStack.CDP.Admin.Api.Models;
+using ProDataStack.CDP.Admin.Api.Services;
+using ProDataStack.CDP.TenantCatalog.Context;
+using ProDataStack.CDP.TenantCatalog.Entities;
 
-namespace ProDataStack.CDP.Admin.Api.Controllers
+namespace ProDataStack.CDP.Admin.Api.Controllers;
+
+[ApiController]
+[Route("api/v1/[controller]")]
+public class TenantsController : ControllerBase
 {
-    [ApiController]
-    [Route("api/v1/[controller]")]
-    public class TenantsController : ControllerBase
+    private readonly IDbContextFactory<TenantCatalogDbContext> _catalogFactory;
+    private readonly ClerkOrganizationService _clerkService;
+    private readonly ProvisioningService _provisioningService;
+    private readonly ILogger<TenantsController> _logger;
+
+    public TenantsController(
+        IDbContextFactory<TenantCatalogDbContext> catalogFactory,
+        ClerkOrganizationService clerkService,
+        ProvisioningService provisioningService,
+        ILogger<TenantsController> logger)
     {
-        [HttpGet("/api/v1/health-check")]
-        [AllowAnonymous]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        public ActionResult HealthCheck()
+        _catalogFactory = catalogFactory;
+        _clerkService = clerkService;
+        _provisioningService = provisioningService;
+        _logger = logger;
+    }
+
+    [HttpGet("/api/v1/health-check")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult HealthCheck()
+    {
+        return Ok(new { status = "ok", service = "CDP Admin API" });
+    }
+
+    /// <summary>List all tenants with provisioning status.</summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(List<TenantResponse>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<List<TenantResponse>>> ListTenants()
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenants = await db.Tenants
+            .AsNoTracking()
+            .OrderBy(t => t.Name)
+            .Select(t => MapToResponse(t))
+            .ToListAsync();
+
+        return Ok(tenants);
+    }
+
+    /// <summary>Get a single tenant by ID.</summary>
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(TenantResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TenantResponse>> GetTenant(Guid id)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        return Ok(MapToResponse(tenant));
+    }
+
+    /// <summary>
+    /// Create a new tenant organisation.
+    /// Creates Clerk Organization, inserts catalog record, triggers provisioning pipeline.
+    /// </summary>
+    [HttpPost]
+    [ProducesResponseType(typeof(TenantResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<TenantResponse>> CreateTenant([FromBody] CreateTenantRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return BadRequest(new { error = "Name is required" });
+
+        var slug = GenerateSlug(request.Name);
+
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+
+        // Check name uniqueness
+        if (await db.Tenants.AnyAsync(t => t.Name == request.Name))
+            return Conflict(new { error = "An organisation with this name already exists" });
+
+        // Get the authenticated user's ID for CreatedBy
+        var userId = User.FindFirst("sub")?.Value ?? "system";
+
+        // 1. Create Clerk Organization
+        ClerkOrg? clerkOrg;
+        try
         {
-            return Ok(new { status = "ok", service = "CDP Admin API" });
+            clerkOrg = await _clerkService.CreateOrganizationAsync(request.Name, slug, userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create Clerk Organization for {Name}", request.Name);
+            return StatusCode(502, new { error = "Failed to create organisation in identity provider" });
         }
 
-        [HttpGet]
-        [AllowAnonymous]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        public ActionResult GetTenants()
+        // 2. Insert tenant record in catalog
+        var tenant = new Tenant
         {
-            return Ok(new { message = "Admin API scaffold — tenant endpoints coming soon" });
+            ClerkOrganizationId = clerkOrg!.Id,
+            Name = request.Name,
+            DatabaseName = "cdp",
+            DatabaseServer = $"cdp-{slug}.database.windows.net",
+            ProvisioningStatus = ProvisioningStatus.Pending,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            CreatedBy = userId
+        };
+
+        db.Tenants.Add(tenant);
+        await db.SaveChangesAsync();
+
+        // 3. Trigger provisioning pipeline
+        try
+        {
+            await _provisioningService.TriggerProvisioningAsync(slug, tenant.Id);
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to trigger provisioning for {Name}", request.Name);
+            tenant.ProvisioningStatus = ProvisioningStatus.Error;
+            tenant.ProvisioningError = "Failed to trigger provisioning pipeline";
+            tenant.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        _logger.LogInformation("Created tenant {Name} ({Id}) with Clerk org {OrgId}", request.Name, tenant.Id, clerkOrg.Id);
+
+        return AcceptedAtAction(nameof(GetTenant), new { id = tenant.Id }, MapToResponse(tenant));
+    }
+
+    /// <summary>Invite a user to a tenant organisation via Clerk.</summary>
+    [HttpPost("{id:guid}/invite")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> InviteUser(Guid id, [FromBody] InviteUserRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.EmailAddress))
+            return BadRequest(new { error = "Email address is required" });
+
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        if (tenant.ProvisioningStatus != ProvisioningStatus.Ready)
+            return BadRequest(new { error = "Organisation is not ready. Current status: " + tenant.ProvisioningStatus });
+
+        try
+        {
+            var invitation = await _clerkService.InviteUserAsync(
+                tenant.ClerkOrganizationId,
+                request.EmailAddress,
+                request.Role);
+
+            return Ok(new { message = "Invitation sent", email = request.EmailAddress, invitationId = invitation?.Id });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to invite {Email} to tenant {Id}", request.EmailAddress, id);
+            return StatusCode(502, new { error = "Failed to send invitation" });
+        }
+    }
+
+    /// <summary>List members of a tenant organisation from Clerk.</summary>
+    [HttpGet("{id:guid}/users")]
+    [ProducesResponseType(typeof(List<TenantUserResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<List<TenantUserResponse>>> ListUsers(Guid id)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        try
+        {
+            var members = await _clerkService.ListMembersAsync(tenant.ClerkOrganizationId);
+            var users = members.Select(m => new TenantUserResponse
+            {
+                UserId = m.PublicUserData?.UserId ?? m.Id,
+                Email = m.PublicUserData?.Identifier,
+                FirstName = m.PublicUserData?.FirstName,
+                LastName = m.PublicUserData?.LastName,
+                Role = m.Role,
+                JoinedAt = m.CreatedAt.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(m.CreatedAt.Value)
+                    : null
+            }).ToList();
+
+            return Ok(users);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to list members for tenant {Id}", id);
+            return StatusCode(502, new { error = "Failed to retrieve organisation members" });
+        }
+    }
+
+    private static TenantResponse MapToResponse(Tenant t) => new()
+    {
+        Id = t.Id,
+        Name = t.Name,
+        ClerkOrganizationId = t.ClerkOrganizationId,
+        ProvisioningStatus = t.ProvisioningStatus.ToString(),
+        ProvisioningError = t.ProvisioningError,
+        DatabaseServer = t.DatabaseServer,
+        CreatedAt = t.CreatedAt
+    };
+
+    private static string GenerateSlug(string name)
+    {
+        var slug = name.ToLowerInvariant();
+        slug = Regex.Replace(slug, @"[^a-z0-9\s-]", "");
+        slug = Regex.Replace(slug, @"\s+", "-");
+        slug = slug.Trim('-');
+
+        // Max 20 chars for SQL Server name constraint (cdp- prefix + slug)
+        if (slug.Length > 20)
+            slug = slug[..20].TrimEnd('-');
+
+        return slug;
     }
 }
