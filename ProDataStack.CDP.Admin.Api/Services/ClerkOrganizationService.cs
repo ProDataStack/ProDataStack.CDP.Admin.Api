@@ -58,6 +58,16 @@ public class ClerkOrganizationService
         response.EnsureSuccessStatusCode();
     }
 
+    /// <summary>
+    /// Find a Clerk Organization by slug. Returns null if not found.
+    /// </summary>
+    public async Task<ClerkOrg?> FindOrganizationBySlugAsync(string slug)
+    {
+        var result = await GetAsync<ClerkOrgList>($"organizations?query={slug}&limit=10");
+        return result?.Data?.FirstOrDefault(o =>
+            string.Equals(o.Slug, slug, StringComparison.OrdinalIgnoreCase));
+    }
+
     private async Task<T?> PostAsync<T>(string path, object body)
     {
         var json = JsonSerializer.Serialize(body, JsonOptions);
@@ -123,5 +133,11 @@ public record ClerkPublicUserData
 public record ClerkMembershipList
 {
     public List<ClerkOrgMember> Data { get; init; } = [];
+    public long TotalCount { get; init; }
+}
+
+public record ClerkOrgList
+{
+    public List<ClerkOrg> Data { get; init; } = [];
     public long TotalCount { get; init; }
 }
