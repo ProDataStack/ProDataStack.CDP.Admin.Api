@@ -90,7 +90,10 @@ public class TenantsController : ControllerBase
             return Conflict(new { error = "An organisation with this name already exists" });
 
         // Get the authenticated user's ID for CreatedBy
-        var userId = User.FindFirst("sub")?.Value ?? "system";
+        // .NET maps "sub" to the long nameidentifier URI by default
+        var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value
+            ?? "system";
 
         // 1. Create Clerk Organization
         ClerkOrg? clerkOrg;
