@@ -32,6 +32,7 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.10.0" />
 
     <PackageReference Include="ProDataStack.CDP.TenantCatalog" Version="1.0.*" />
+    <PackageReference Include="ProDataStack.CDP.DataModel" Version="1.0.*" />
   </ItemGroup>
 
   <ItemGroup>

@@ -213,6 +213,90 @@ public class TenantsController : ControllerBase
         }
     }
 
+    /// <summary>Delete a tenant: removes Clerk org, triggers destroy pipeline, removes catalog record.</summary>
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> DeleteTenant(Guid id)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        var slug = GenerateSlug(tenant.Name);
+
+        // Delete Clerk Organization
+        try
+        {
+            await _clerkService.DeleteOrganizationAsync(tenant.ClerkOrganizationId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete Clerk org {OrgId} — continuing with destroy", tenant.ClerkOrganizationId);
+        }
+
+        // Trigger destroy pipeline if tenant was provisioned
+        if (tenant.ProvisioningStatus == ProvisioningStatus.Ready ||
+            tenant.ProvisioningStatus == ProvisioningStatus.Error)
+        {
+            try
+            {
+                await _provisioningService.TriggerDestroyAsync(slug, tenant.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to trigger destroy pipeline for {Name} — removing catalog record anyway", tenant.Name);
+            }
+        }
+
+        // Remove from catalog
+        db.Tenants.Remove(tenant);
+        await db.SaveChangesAsync();
+
+        _logger.LogInformation("Deleted tenant {Name} ({Id})", tenant.Name, tenant.Id);
+        return Ok(new { message = $"Tenant '{tenant.Name}' deleted" });
+    }
+
+    /// <summary>Run DataModel migrations against a specific tenant database.</summary>
+    [HttpPost("{id:guid}/migrate")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult> MigrateTenant(Guid id)
+    {
+        await using var catalogDb = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await catalogDb.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        if (tenant.ProvisioningStatus != ProvisioningStatus.Ready)
+            return BadRequest(new { error = $"Tenant is not ready. Status: {tenant.ProvisioningStatus}" });
+
+        if (string.IsNullOrEmpty(tenant.ConnectionString))
+            return BadRequest(new { error = "Tenant has no connection string" });
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<ProDataStack.CDP.DataModel.Context.CdpDbContext>()
+                .UseSqlServer(tenant.ConnectionString)
+                .Options;
+
+            await using var tenantDb = new ProDataStack.CDP.DataModel.Context.CdpDbContext(options);
+            await tenantDb.Database.MigrateAsync();
+
+            _logger.LogInformation("Migrations applied to tenant {Name} ({Id})", tenant.Name, tenant.Id);
+            return Ok(new { message = $"Migrations applied to '{tenant.Name}'" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to migrate tenant {Name} ({Id})", tenant.Name, tenant.Id);
+            return StatusCode(500, new { error = $"Migration failed: {ex.Message}" });
+        }
+    }
+
     private static TenantResponse MapToResponse(Tenant t) => new()
     {
         Id = t.Id,
