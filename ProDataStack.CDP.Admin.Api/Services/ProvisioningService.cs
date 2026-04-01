@@ -84,6 +84,6 @@ public class ProvisioningService
             throw new HttpRequestException($"Failed to trigger destroy: {response.StatusCode}");
         }
 
-        _logger.LogInformation("Triggered destroy for tenant {Slug} ({Id})", tenantSlug, tenantId);
+        _logger.LogInformation("Triggered destroy for tenant {Slug}", tenantSlug);
     }
 }
