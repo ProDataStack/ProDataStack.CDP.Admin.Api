@@ -259,15 +259,15 @@ public class TenantsController : ControllerBase
         return Ok(new { message = $"Tenant '{tenant.Name}' deleted" });
     }
 
-    /// <summary>Run DataModel migrations against a specific tenant database.</summary>
+    /// <summary>Run DataModel migrations against a specific tenant database. Returns a job ID for polling.</summary>
     [HttpPost("{id:guid}/migrate")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult> MigrateTenant(Guid id)
     {
-        await using var catalogDb = await _catalogFactory.CreateDbContextAsync();
-        var tenant = await catalogDb.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
 
         if (tenant == null)
             return NotFound();
@@ -278,23 +278,124 @@ public class TenantsController : ControllerBase
         if (string.IsNullOrEmpty(tenant.ConnectionString))
             return BadRequest(new { error = "Tenant has no connection string" });
 
-        try
-        {
-            var options = new DbContextOptionsBuilder<ProDataStack.CDP.DataModel.Context.CdpDbContext>()
-                .UseSqlServer(tenant.ConnectionString)
-                .Options;
+        var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
 
-            await using var tenantDb = new ProDataStack.CDP.DataModel.Context.CdpDbContext(options);
-            await tenantDb.Database.MigrateAsync();
-
-            _logger.LogInformation("Migrations applied to tenant {Name} ({Id})", tenant.Name, tenant.Id);
-            return Ok(new { message = $"Migrations applied to '{tenant.Name}'" });
-        }
-        catch (Exception ex)
+        var job = new TenantJob
         {
-            _logger.LogError(ex, "Failed to migrate tenant {Name} ({Id})", tenant.Name, tenant.Id);
-            return StatusCode(500, new { error = $"Migration failed: {ex.Message}" });
-        }
+            Id = Guid.NewGuid(),
+            TenantId = id,
+            JobType = TenantJobType.Migration,
+            Status = TenantJobStatus.InProgress,
+            Description = "Apply DataModel migrations",
+            CreatedBy = userId,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        db.TenantJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        // Run migration (fire-and-forget style but we update the job record)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var options = new DbContextOptionsBuilder<ProDataStack.CDP.DataModel.Context.CdpDbContext>()
+                    .UseSqlServer(tenant.ConnectionString)
+                    .Options;
+
+                await using var tenantDb = new ProDataStack.CDP.DataModel.Context.CdpDbContext(options);
+                await tenantDb.Database.MigrateAsync();
+
+                await using var updateDb = await _catalogFactory.CreateDbContextAsync();
+                var j = await updateDb.TenantJobs.FindAsync(job.Id);
+                if (j != null)
+                {
+                    j.Status = TenantJobStatus.Completed;
+                    j.CompletedAt = DateTimeOffset.UtcNow;
+                    await updateDb.SaveChangesAsync();
+                }
+
+                _logger.LogInformation("Migrations applied to tenant {Name} ({Id})", tenant.Name, tenant.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to migrate tenant {Name} ({Id})", tenant.Name, tenant.Id);
+
+                try
+                {
+                    await using var updateDb = await _catalogFactory.CreateDbContextAsync();
+                    var j = await updateDb.TenantJobs.FindAsync(job.Id);
+                    if (j != null)
+                    {
+                        j.Status = TenantJobStatus.Error;
+                        j.Error = ex.Message;
+                        j.CompletedAt = DateTimeOffset.UtcNow;
+                        await updateDb.SaveChangesAsync();
+                    }
+                }
+                catch (Exception updateEx)
+                {
+                    _logger.LogError(updateEx, "Failed to update job status for {JobId}", job.Id);
+                }
+            }
+        });
+
+        return Accepted(new { jobId = job.Id, status = job.Status });
+    }
+
+    /// <summary>List jobs for a tenant, most recent first.</summary>
+    [HttpGet("{id:guid}/jobs")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult> ListJobs(Guid id)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var jobs = await db.TenantJobs
+            .Where(j => j.TenantId == id)
+            .OrderByDescending(j => j.CreatedAt)
+            .Take(50)
+            .Select(j => new
+            {
+                j.Id,
+                j.JobType,
+                j.Status,
+                j.Description,
+                j.Error,
+                j.CreatedBy,
+                j.CreatedAt,
+                j.CompletedAt
+            })
+            .ToListAsync();
+
+        return Ok(jobs);
+    }
+
+    /// <summary>Get a single job by ID.</summary>
+    [HttpGet("{id:guid}/jobs/{jobId:guid}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> GetJob(Guid id, Guid jobId)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var job = await db.TenantJobs
+            .Where(j => j.TenantId == id && j.Id == jobId)
+            .Select(j => new
+            {
+                j.Id,
+                j.JobType,
+                j.Status,
+                j.Description,
+                j.Error,
+                j.CreatedBy,
+                j.CreatedAt,
+                j.CompletedAt
+            })
+            .FirstOrDefaultAsync();
+
+        if (job == null)
+            return NotFound();
+
+        return Ok(job);
     }
 
     private static TenantResponse MapToResponse(Tenant t) => new()
