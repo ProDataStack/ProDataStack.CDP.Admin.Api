@@ -53,7 +53,7 @@ public class ProvisioningService
         _logger.LogInformation("Triggered provisioning for tenant {Slug} ({Id})", tenantSlug, tenantId);
     }
 
-    public async Task TriggerDestroyAsync(string tenantSlug, Guid tenantId)
+    public async Task TriggerDestroyAsync(string tenantSlug)
     {
         var environment = _configuration["Provisioning:Environment"] ?? "testing";
         var repo = _configuration["Provisioning:Repo"] ?? "ProDataStack/ProDataStack.CDP.TenantProvisioning";
@@ -65,9 +65,8 @@ public class ProvisioningService
             inputs = new
             {
                 tenant_slug = tenantSlug,
-                tenant_id = tenantId.ToString(),
                 environment,
-                confirm_destroy = "yes"
+                confirm = tenantSlug
             }
         };
 
