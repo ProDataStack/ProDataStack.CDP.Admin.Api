@@ -215,10 +215,11 @@ public class TenantsController : ControllerBase
 
     /// <summary>
     /// Delete a tenant: triggers destroy pipeline, deletes Clerk org, removes catalog record.
-    /// Requires confirmName to match the tenant name (GitHub-style confirmation).
+    /// Requires confirmName to match the tenant name. Returns a job ID for polling.
+    /// Job survives tenant deletion (FK SET NULL).
     /// </summary>
     [HttpDelete("{id:guid}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult> DeleteTenant(Guid id, [FromQuery] string? confirmName)
@@ -233,47 +234,109 @@ public class TenantsController : ControllerBase
             return BadRequest(new { error = "Confirmation name does not match the organisation name" });
 
         var slug = GenerateSlug(tenant.Name);
-        var errors = new List<string>();
+        var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
 
-        // 1. Trigger destroy pipeline (fire and forget — infra cleanup runs in background)
-        if (tenant.ProvisioningStatus == ProvisioningStatus.Ready ||
-            tenant.ProvisioningStatus == ProvisioningStatus.Error)
+        var job = new TenantJob
+        {
+            Id = Guid.NewGuid(),
+            TenantId = id,
+            JobType = TenantJobType.Destroy,
+            Status = TenantJobStatus.InProgress,
+            Description = $"Delete organisation '{tenant.Name}'",
+            CreatedBy = userId,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        db.TenantJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        _ = Task.Run(async () =>
         {
             try
             {
-                await _provisioningService.TriggerDestroyAsync(slug);
-                _logger.LogInformation("Triggered destroy pipeline for {Slug}", slug);
+                // 1. Trigger destroy pipeline
+                if (tenant.ProvisioningStatus == ProvisioningStatus.Ready ||
+                    tenant.ProvisioningStatus == ProvisioningStatus.Error)
+                {
+                    try
+                    {
+                        await _provisioningService.TriggerDestroyAsync(slug);
+                        _logger.LogInformation("Triggered destroy pipeline for {Slug}", slug);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to trigger destroy pipeline for {Name}", tenant.Name);
+                    }
+                }
+
+                // 2. Delete Clerk Organization
+                try
+                {
+                    await _clerkService.DeleteOrganizationAsync(tenant.ClerkOrganizationId);
+                    _logger.LogInformation("Deleted Clerk org {OrgId}", tenant.ClerkOrganizationId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete Clerk org {OrgId}", tenant.ClerkOrganizationId);
+                }
+
+                // 3. Remove from catalog (job survives — FK SET NULL)
+                await using var updateDb = await _catalogFactory.CreateDbContextAsync();
+                var t = await updateDb.Tenants.FindAsync(id);
+                if (t != null)
+                {
+                    updateDb.Tenants.Remove(t);
+                    await updateDb.SaveChangesAsync();
+                }
+
+                // 4. Mark job completed
+                var j = await updateDb.TenantJobs.FindAsync(job.Id);
+                if (j != null)
+                {
+                    j.Status = TenantJobStatus.Completed;
+                    j.CompletedAt = DateTimeOffset.UtcNow;
+                    await updateDb.SaveChangesAsync();
+                }
+
+                _logger.LogInformation("Deleted tenant {Name} ({Id})", tenant.Name, id);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to trigger destroy pipeline for {Name}", tenant.Name);
-                errors.Add($"Infrastructure destroy may not have triggered: {ex.Message}");
+                _logger.LogError(ex, "Failed to delete tenant {Name} ({Id})", tenant.Name, id);
+                try
+                {
+                    await using var errDb = await _catalogFactory.CreateDbContextAsync();
+                    var j = await errDb.TenantJobs.FindAsync(job.Id);
+                    if (j != null)
+                    {
+                        j.Status = TenantJobStatus.Error;
+                        j.Error = ex.Message;
+                        j.CompletedAt = DateTimeOffset.UtcNow;
+                        await errDb.SaveChangesAsync();
+                    }
+                }
+                catch { }
             }
-        }
-
-        // 2. Delete Clerk Organization
-        try
-        {
-            await _clerkService.DeleteOrganizationAsync(tenant.ClerkOrganizationId);
-            _logger.LogInformation("Deleted Clerk org {OrgId}", tenant.ClerkOrganizationId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to delete Clerk org {OrgId}", tenant.ClerkOrganizationId);
-            errors.Add($"Clerk org deletion failed: {ex.Message}");
-        }
-
-        // 3. Remove from catalog (cascade deletes TenantJobs too)
-        db.Tenants.Remove(tenant);
-        await db.SaveChangesAsync();
-
-        _logger.LogInformation("Deleted tenant {Name} ({Id})", tenant.Name, tenant.Id);
-
-        return Ok(new
-        {
-            message = $"Organisation '{tenant.Name}' deleted",
-            warnings = errors.Count > 0 ? errors : null
         });
+
+        return Accepted(new { jobId = job.Id, status = job.Status });
+    }
+
+    /// <summary>Get a job by ID (not scoped to tenant — survives tenant deletion).</summary>
+    [HttpGet("/api/v1/jobs/{jobId:guid}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> GetJobById(Guid jobId)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var job = await db.TenantJobs
+            .Where(j => j.Id == jobId)
+            .Select(j => new { j.Id, j.JobType, j.Status, j.Description, j.Error, j.CreatedBy, j.CreatedAt, j.CompletedAt })
+            .FirstOrDefaultAsync();
+
+        if (job == null) return NotFound();
+        return Ok(job);
     }
 
     /// <summary>Run DataModel migrations against a specific tenant database. Returns a job ID for polling.</summary>
