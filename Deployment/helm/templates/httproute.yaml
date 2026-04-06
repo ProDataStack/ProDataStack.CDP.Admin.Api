@@ -8,7 +8,9 @@ spec:
   - name: prodatastack-gateway
     namespace: envoy-gateway-system
   hostnames:
-  - {{ .Values.hostName }}
+  {{- range .Values.hostNames }}
+  - {{ . }}
+  {{- end }}
   rules:
   - matches:
     - path:

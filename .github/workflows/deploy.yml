@@ -120,7 +120,7 @@ jobs:
 
       - name: Add runner IP to ACR network rules
         run: |
-          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          ACR_NAME="pdscontainerregistryproduction"
           RUNNER_IP=$(curl -s https://api.ipify.org)
           az acr network-rule add --name "$ACR_NAME" --ip-address "$RUNNER_IP"
           sleep 10
@@ -128,20 +128,20 @@ jobs:
       - name: Log in to Azure Container Registry
         run: |
           for i in 1 2 3 4 5; do
-            az acr login --name ${{ vars.CONTAINER_REGISTRY_NAME }} && break
+            az acr login --name pdscontainerregistryproduction && break
             echo "ACR login attempt $i failed, retrying in 15 seconds..."
             sleep 15
           done
 
       - name: Tag and push Docker image
         run: |
-          docker tag cdp.admin.api:${{ github.run_number }} ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
-          docker push ${{ vars.CONTAINER_REGISTRY }}/cdp.admin.api:${{ github.run_number }}
+          docker tag cdp.admin.api:${{ github.run_number }} pdscontainerregistryproduction.azurecr.io/cdp.admin.api:${{ github.run_number }}
+          docker push pdscontainerregistryproduction.azurecr.io/cdp.admin.api:${{ github.run_number }}
 
       - name: Remove runner IP from ACR network rules
         if: always()
         run: |
-          ACR_NAME="${{ vars.CONTAINER_REGISTRY_NAME }}"
+          ACR_NAME="pdscontainerregistryproduction"
           RUNNER_IP=$(curl -s https://api.ipify.org)
           az acr network-rule remove --name "$ACR_NAME" --ip-address "$RUNNER_IP" || true
 
@@ -159,13 +159,14 @@ jobs:
 
       - name: Replace tokens in Helm values
         run: |
-          sed -i "s|__ContainerRegistry__|${{ vars.CONTAINER_REGISTRY }}|g" Deployment/helm/values.yaml
+          sed -i "s|__ContainerRegistry__|pdscontainerregistryproduction.azurecr.io|g" Deployment/helm/values.yaml
           sed -i "s|__repository__|cdp.admin.api|g" Deployment/helm/values.yaml
           sed -i "s|__tag__|${{ github.run_number }}|g" Deployment/helm/values.yaml
           sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
           sed -i "s|__Environment__|testing|g" Deployment/helm/values.yaml
           sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
-          sed -i "s|__HostName__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostNameTesting__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostNameProduction__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
           sed -i "s|__KeyVaultName__|cdp-admin-api-test|g" Deployment/helm/values.yaml
           sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
           sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
@@ -319,7 +320,8 @@ jobs:
           sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
           sed -i "s|__Environment__|production|g" Deployment/helm/values.yaml
           sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
-          sed -i "s|__HostName__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostNameTesting__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostNameProduction__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
           sed -i "s|__KeyVaultName__|cdp-admin-api-prod|g" Deployment/helm/values.yaml
           sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
           sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
