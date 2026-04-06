@@ -6,7 +6,9 @@ image:
 appName: __AppName__
 environment: __Environment__
 serviceName: __ServiceName__
-hostName: __HostName__
+hostNames:
+  - __HostNameTesting__
+  - __HostNameProduction__
 keyVault:
   name: __KeyVaultName__
   tenantId: __TenantId__
