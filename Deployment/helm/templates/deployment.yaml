@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Values.appName }}-deployment
-  namespace: cdp
+  namespace: {{ .Release.Namespace }}
 spec:
   replicas: {{ .Values.kubernetes.replicaCount }}
   selector:

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Values.appName }}-configmap
-  namespace: cdp
+  namespace: {{ .Release.Namespace }}
 data:
   AMQP__AzureServiceBus__ConnectionString: "{{ .Values.serviceBus.connectionString }}"
   AzureMonitor__ConnectionString: "{{ .Values.azureMonitor.connectionString }}"
