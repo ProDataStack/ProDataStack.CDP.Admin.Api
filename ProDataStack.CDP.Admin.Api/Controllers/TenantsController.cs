@@ -35,7 +35,8 @@ public class TenantsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult HealthCheck()
     {
-        return Ok(new { status = "ok", service = "CDP Admin API" });
+        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "unknown";
+        return Ok(new { status = "ok", service = "CDP Admin API", environment = env, deploy = "namespace-separation" });
     }
 
     /// <summary>List all tenants with provisioning status.</summary>
