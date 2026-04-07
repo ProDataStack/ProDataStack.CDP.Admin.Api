@@ -165,8 +165,7 @@ jobs:
           sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
           sed -i "s|__Environment__|testing|g" Deployment/helm/values.yaml
           sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
-          sed -i "s|__HostNameTesting__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
-          sed -i "s|__HostNameProduction__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostName__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
           sed -i "s|__KeyVaultName__|cdp-admin-api-test|g" Deployment/helm/values.yaml
           sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
           sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
@@ -185,9 +184,10 @@ jobs:
 
       - name: Deploy with Helm
         run: |
-          helm upgrade --install cdp-admin-api-release \
+          helm upgrade --install cdp-admin-api-testing-release \
             ./Deployment/helm \
-            --namespace cdp \
+            --namespace cdp-testing \
+            --create-namespace \
             --wait \
             --timeout 10m
 
@@ -195,16 +195,16 @@ jobs:
         if: failure()
         id: get-pod
         run: |
-          POD_NAME=$(kubectl get pods -n cdp -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          POD_NAME=$(kubectl get pods -n cdp-testing -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
           echo "pod_name=$POD_NAME" >> $GITHUB_OUTPUT
 
       - name: Get pod logs on failure
         if: failure() && steps.get-pod.outputs.pod_name != ''
-        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp --tail=100 || true
+        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp-testing --tail=100 || true
 
       - name: Describe pod on failure
         if: failure() && steps.get-pod.outputs.pod_name != ''
-        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp || true
+        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp-testing || true
 
   deploy-production:
     name: Deploy to Production
@@ -320,8 +320,7 @@ jobs:
           sed -i "s|__AppName__|cdp-admin-api|g" Deployment/helm/values.yaml
           sed -i "s|__Environment__|production|g" Deployment/helm/values.yaml
           sed -i "s|__ServiceName__|cdp-admin-api-service|g" Deployment/helm/values.yaml
-          sed -i "s|__HostNameTesting__|cdp-admin-api.testing.pdsnextgen.com|g" Deployment/helm/values.yaml
-          sed -i "s|__HostNameProduction__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
+          sed -i "s|__HostName__|cdp-admin-api.prodatastack.com|g" Deployment/helm/values.yaml
           sed -i "s|__KeyVaultName__|cdp-admin-api-prod|g" Deployment/helm/values.yaml
           sed -i "s|__TenantId__|${{ secrets.AZURE_TENANT_ID }}|g" Deployment/helm/values.yaml
           sed -i "s|__ServicePrincipalClientId__|${{ secrets.AZURE_DEPLOYMENT_CLIENT_ID}}|g" Deployment/helm/values.yaml
@@ -340,9 +339,10 @@ jobs:
 
       - name: Deploy with Helm
         run: |
-          helm upgrade --install cdp-admin-api-release \
+          helm upgrade --install cdp-admin-api-production-release \
             ./Deployment/helm \
-            --namespace cdp \
+            --namespace cdp-production \
+            --create-namespace \
             --wait \
             --timeout 10m
 
@@ -350,13 +350,13 @@ jobs:
         if: failure()
         id: get-pod
         run: |
-          POD_NAME=$(kubectl get pods -n cdp -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          POD_NAME=$(kubectl get pods -n cdp-production -l app=cdp-admin-api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
           echo "pod_name=$POD_NAME" >> $GITHUB_OUTPUT
 
       - name: Get pod logs on failure
         if: failure() && steps.get-pod.outputs.pod_name != ''
-        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp --tail=100 || true
+        run: kubectl logs ${{ steps.get-pod.outputs.pod_name }} -n cdp-production --tail=100 || true
 
       - name: Describe pod on failure
         if: failure() && steps.get-pod.outputs.pod_name != ''
-        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp || true
+        run: kubectl describe pod ${{ steps.get-pod.outputs.pod_name }} -n cdp-production || true
