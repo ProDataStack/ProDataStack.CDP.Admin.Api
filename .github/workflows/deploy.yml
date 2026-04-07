@@ -120,15 +120,17 @@ jobs:
 
       - name: Add runner IP to ACR network rules
         run: |
+          PROD_SUB="${{ vars.PRODUCTION_SUBSCRIPTION_ID }}"
           ACR_NAME="pdscontainerregistryproduction"
           RUNNER_IP=$(curl -s https://api.ipify.org)
-          az acr network-rule add --name "$ACR_NAME" --ip-address "$RUNNER_IP"
+          az acr network-rule add --name "$ACR_NAME" --ip-address "$RUNNER_IP" --subscription "$PROD_SUB"
           sleep 10
 
       - name: Log in to Azure Container Registry
         run: |
+          PROD_SUB="${{ vars.PRODUCTION_SUBSCRIPTION_ID }}"
           for i in 1 2 3 4 5; do
-            az acr login --name pdscontainerregistryproduction && break
+            az acr login --name pdscontainerregistryproduction --subscription "$PROD_SUB" && break
             echo "ACR login attempt $i failed, retrying in 15 seconds..."
             sleep 15
           done
@@ -141,9 +143,10 @@ jobs:
       - name: Remove runner IP from ACR network rules
         if: always()
         run: |
+          PROD_SUB="${{ vars.PRODUCTION_SUBSCRIPTION_ID }}"
           ACR_NAME="pdscontainerregistryproduction"
           RUNNER_IP=$(curl -s https://api.ipify.org)
-          az acr network-rule remove --name "$ACR_NAME" --ip-address "$RUNNER_IP" || true
+          az acr network-rule remove --name "$ACR_NAME" --ip-address "$RUNNER_IP" --subscription "$PROD_SUB" || true
 
       - name: Set AKS context
         run: |
