@@ -46,6 +46,12 @@ public class ClerkOrganizationService
         return result?.Data ?? [];
     }
 
+    public async Task<List<ClerkUserOrgMembership>> ListUserOrganizationMembershipsAsync(string userId)
+    {
+        var result = await GetAsync<ClerkUserMembershipList>($"users/{userId}/organization_memberships?limit=100");
+        return result?.Data ?? [];
+    }
+
     public async Task RemoveMemberAsync(string orgId, string userId)
     {
         var response = await _httpClient.DeleteAsync($"organizations/{orgId}/memberships/{userId}");
@@ -139,5 +145,18 @@ public record ClerkMembershipList
 public record ClerkOrgList
 {
     public List<ClerkOrg> Data { get; init; } = [];
+    public long TotalCount { get; init; }
+}
+
+public record ClerkUserOrgMembership
+{
+    public string Id { get; init; } = "";
+    public string Role { get; init; } = "";
+    public ClerkOrg? Organization { get; init; }
+}
+
+public record ClerkUserMembershipList
+{
+    public List<ClerkUserOrgMembership> Data { get; init; } = [];
     public long TotalCount { get; init; }
 }
