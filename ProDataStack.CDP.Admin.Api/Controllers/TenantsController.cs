@@ -53,6 +53,51 @@ public class TenantsController : ControllerBase
         return Ok(tenants);
     }
 
+    /// <summary>
+    /// List the tenants the current user has access to.
+    /// Exclude orgs that are not in the tenant catalog i.e. ProDataStack which is used for platform admin only.
+    /// </summary>
+    [HttpGet("me")]
+    [ProducesResponseType(typeof(List<TenantResponse>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<List<TenantResponse>>> ListMyTenants()
+    {
+        var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
+
+        if (string.IsNullOrEmpty(userId))
+            return Unauthorized();
+
+        List<ClerkUserOrgMembership> memberships;
+        try
+        {
+            memberships = await _clerkService.ListUserOrganizationMembershipsAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to list Clerk org memberships for user {UserId}", userId);
+            return StatusCode(502, new { error = "Failed to retrieve user organisations" });
+        }
+
+        var orgIds = memberships
+            .Select(m => m.Organization?.Id)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Distinct()
+            .ToList();
+
+        if (orgIds.Count == 0)
+            return Ok(new List<TenantResponse>());
+
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenants = await db.Tenants
+            .AsNoTracking()
+            .Where(t => orgIds.Contains(t.ClerkOrganizationId))
+            .OrderBy(t => t.Name)
+            .Select(t => MapToResponse(t))
+            .ToListAsync();
+
+        return Ok(tenants);
+    }
+
     /// <summary>Get a single tenant by ID.</summary>
     [HttpGet("{id:guid}")]
     [ProducesResponseType(typeof(TenantResponse), StatusCodes.Status200OK)]
