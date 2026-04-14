@@ -384,7 +384,22 @@ public class TenantsController : ControllerBase
         return Ok(job);
     }
 
-    /// <summary>Run DataModel migrations against a specific tenant database. Returns a job ID for polling.</summary>
+    /// <summary>
+    /// Bring a tenant up to date with the current platform state: applies pending
+    /// DataModel EF migrations AND (re-)grants every service identity on the tenant DB.
+    /// Both are idempotent. Click this after deploying a new service or a DataModel bump.
+    ///
+    /// The actual work runs in the migrate-and-grant-tenant.yml workflow in the
+    /// TenantProvisioning repo. This endpoint creates a TenantJob row (Status=InProgress),
+    /// dispatches the workflow with the job ID, and returns 202 immediately. The workflow
+    /// updates the same job row to Completed/Error on its final step, so the admin UI's
+    /// existing TenantJob polling sees the transition naturally.
+    ///
+    /// Why a workflow and not inline EF: the workflow runs as the CDP deployment SP,
+    /// which is in the SQL AAD admin group and has the rights to CREATE USER for external
+    /// identities. The Admin API pod identity does not. Routing through the workflow lets
+    /// us do migrate + grant in one operation without elevating Admin API's DB privileges.
+    /// </summary>
     [HttpPost("{id:guid}/migrate")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -403,6 +418,8 @@ public class TenantsController : ControllerBase
         if (string.IsNullOrEmpty(tenant.ConnectionString))
             return BadRequest(new { error = "Tenant has no connection string" });
 
+        var slug = GenerateSlug(tenant.Name);
+
         var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value;
 
@@ -412,7 +429,7 @@ public class TenantsController : ControllerBase
             TenantId = id,
             JobType = TenantJobType.Migration,
             Status = TenantJobStatus.InProgress,
-            Description = "Apply DataModel migrations",
+            Description = "Apply migrations + grant service identities",
             CreatedBy = userId,
             CreatedAt = DateTimeOffset.UtcNow
         };
@@ -420,51 +437,35 @@ public class TenantsController : ControllerBase
         db.TenantJobs.Add(job);
         await db.SaveChangesAsync();
 
-        // Run migration (fire-and-forget style but we update the job record)
-        _ = Task.Run(async () =>
+        try
         {
+            await _provisioningService.TriggerMigrateAndGrantAsync(slug, id, job.Id);
+            _logger.LogInformation("Triggered migrate-and-grant for tenant {Name} ({Id}), job {JobId}", tenant.Name, id, job.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to trigger migrate-and-grant workflow for {Name} ({Id})", tenant.Name, id);
+
+            // Mark job as error so the UI doesn't hang in InProgress
             try
             {
-                var options = new DbContextOptionsBuilder<ProDataStack.CDP.DataModel.Context.CdpDbContext>()
-                    .UseSqlServer(tenant.ConnectionString)
-                    .Options;
-
-                await using var tenantDb = new ProDataStack.CDP.DataModel.Context.CdpDbContext(options);
-                await tenantDb.Database.MigrateAsync();
-
                 await using var updateDb = await _catalogFactory.CreateDbContextAsync();
                 var j = await updateDb.TenantJobs.FindAsync(job.Id);
                 if (j != null)
                 {
-                    j.Status = TenantJobStatus.Completed;
+                    j.Status = TenantJobStatus.Error;
+                    j.Error = "Failed to dispatch workflow: " + ex.Message;
                     j.CompletedAt = DateTimeOffset.UtcNow;
                     await updateDb.SaveChangesAsync();
                 }
-
-                _logger.LogInformation("Migrations applied to tenant {Name} ({Id})", tenant.Name, tenant.Id);
             }
-            catch (Exception ex)
+            catch (Exception updateEx)
             {
-                _logger.LogError(ex, "Failed to migrate tenant {Name} ({Id})", tenant.Name, tenant.Id);
-
-                try
-                {
-                    await using var updateDb = await _catalogFactory.CreateDbContextAsync();
-                    var j = await updateDb.TenantJobs.FindAsync(job.Id);
-                    if (j != null)
-                    {
-                        j.Status = TenantJobStatus.Error;
-                        j.Error = ex.Message;
-                        j.CompletedAt = DateTimeOffset.UtcNow;
-                        await updateDb.SaveChangesAsync();
-                    }
-                }
-                catch (Exception updateEx)
-                {
-                    _logger.LogError(updateEx, "Failed to update job status for {JobId}", job.Id);
-                }
+                _logger.LogError(updateEx, "Failed to update job status for {JobId}", job.Id);
             }
-        });
+
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Failed to dispatch migrate-and-grant workflow", details = ex.Message });
+        }
 
         return Accepted(new { jobId = job.Id, status = job.Status });
     }
