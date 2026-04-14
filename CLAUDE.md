@@ -44,3 +44,11 @@ The Admin API uses Clerk JWT auth with `org_id` claims. Platform administrators 
 - `ProDataStack.CDP.TenantCatalog` — tenant catalog DbContext (NuGet)
 
 When `DataModel` changes, Admin API should be redeployed **first** (it runs migrations), before other services.
+
+## Upcoming migrations (Iteration 2)
+
+The I2 DataModel bump adds:
+- **Segmentation tables** — `Segment`, `SegmentField`, `ExportLog` (CDP-201, CDP-203)
+- **Connector runtime tables** — `ConnectorConfig`, `ConnectorSyncJob`, `ConnectorSyncStaging`, `ConnectorSyncError` (CDP-103, CDP-106). These are the state store for the new `ProDataStack.CDP.Connectors.Api` (Mailchimp inbound connector). Specific indexes required on `ConnectorSyncJob (Status, ScheduledFor)` and `ConnectorSyncJob (Status, HeartbeatAt)` for the worker's claim and reaper queries — verify both are present in the generated migration before shipping.
+
+Admin API runs this migration once per tenant DB via the existing tenant migrator path. Full spec: `CDP/iterations/2/ITERATION-2-TICKETS.md` § Epic 1 and § DataModel NuGet Changes Required. Decision rationale: `CDP/CLAUDE.md` note #11.
