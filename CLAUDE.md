@@ -45,10 +45,12 @@ The Admin API uses Clerk JWT auth with `org_id` claims. Platform administrators 
 
 When `DataModel` changes, Admin API should be redeployed **first** (it runs migrations), before other services.
 
-## Upcoming migrations (Iteration 2)
+## Iteration 2 migrations (shipped)
 
-The I2 DataModel bump adds:
-- **Segmentation tables** — `Segment`, `SegmentField`, `ExportLog` (CDP-201, CDP-203)
-- **Connector runtime tables** — `ConnectorConfig`, `ConnectorSyncJob`, `ConnectorSyncStaging`, `ConnectorSyncError` (CDP-103, CDP-106). These are the state store for the new `ProDataStack.CDP.Connectors.Api` (Mailchimp inbound connector). Specific indexes required on `ConnectorSyncJob (Status, ScheduledFor)` and `ConnectorSyncJob (Status, HeartbeatAt)` for the worker's claim and reaper queries — verify both are present in the generated migration before shipping.
+The I2 DataModel NuGet (1.0.x) ships:
+- **Segmentation tables** — `Segment`, `SegmentField`, `ExportLog` (migration `AddSegmentationEntities`)
+- **Connector runtime tables** — `ConnectorConfig`, `ConnectorSyncJob`, `ConnectorSyncStaging`, `ConnectorSyncError` (migration `AddConnectorRuntime`). State store for `ProDataStack.CDP.Connectors.Api`. Required indexes on `ConnectorSyncJob (Status, ScheduledFor)` (worker claim) and `ConnectorSyncJob (Status, HeartbeatAt)` (reaper) are in the migration.
 
-Admin API runs this migration once per tenant DB via the existing tenant migrator path. Full spec: `CDP/iterations/2/ITERATION-2-TICKETS.md` § Epic 1 and § DataModel NuGet Changes Required. Decision rationale: `CDP/CLAUDE.md` note #11.
+The **Migrate** button in cdp-admin (which dispatches `migrate-and-grant-tenant.yml` in TenantProvisioning) now applies pending migrations AND grants every service identity in one click — see `CDP/CLAUDE.md` notes #8 and #10. Admin API's `MigrateTenant` endpoint dispatches that workflow rather than running EF inline (privilege boundary).
+
+Full spec: `CDP/iterations/2/ITERATION-2-TICKETS.md` § Epic 1 and § DataModel NuGet Changes Required. Decision rationale: `CDP/CLAUDE.md` note #11.
