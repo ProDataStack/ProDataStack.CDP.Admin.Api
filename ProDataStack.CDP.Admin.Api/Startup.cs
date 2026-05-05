@@ -41,19 +41,26 @@ namespace ProDataStack.CDP.Admin.Api
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", clerkSecretKey);
             });
 
-            // GitHub API for triggering provisioning pipeline
-            var githubToken = Configuration["GitHub:Token"] ?? "";
-            services.AddHttpClient<ProvisioningService>(client =>
-            {
-                client.BaseAddress = new Uri("https://api.github.com/");
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
-                client.DefaultRequestHeaders.Add("Accept", "application/vnd.github+json");
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("CDP-Admin-API/1.0");
-            });
-
             services.AddHealthChecks();
 
             var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+
+            // Provisioning: cloud (GitHub workflow_dispatch) in non-dev, local SQL Server in dev
+            if (env.Equals("Development", StringComparison.OrdinalIgnoreCase))
+            {
+                services.AddScoped<IProvisioningService, LocalProvisioningService>();
+            }
+            else
+            {
+                var githubToken = Configuration["GitHub:Token"] ?? "";
+                services.AddHttpClient<IProvisioningService, ProvisioningService>(client =>
+                {
+                    client.BaseAddress = new Uri("https://api.github.com/");
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
+                    client.DefaultRequestHeaders.Add("Accept", "application/vnd.github+json");
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("CDP-Admin-API/1.0");
+                });
+            }
 
             services.AddApplicationInsightsTelemetry(options =>
             {

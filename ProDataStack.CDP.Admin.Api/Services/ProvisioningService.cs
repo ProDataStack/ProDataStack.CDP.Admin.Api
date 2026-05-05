@@ -6,7 +6,7 @@ namespace ProDataStack.CDP.Admin.Api.Services;
 /// <summary>
 /// Triggers the tenant provisioning pipeline via GitHub API (workflow_dispatch).
 /// </summary>
-public class ProvisioningService
+public class ProvisioningService : IProvisioningService
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<ProvisioningService> _logger;

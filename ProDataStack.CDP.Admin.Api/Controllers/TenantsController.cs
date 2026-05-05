@@ -15,13 +15,13 @@ public class TenantsController : ControllerBase
 {
     private readonly IDbContextFactory<TenantCatalogDbContext> _catalogFactory;
     private readonly ClerkOrganizationService _clerkService;
-    private readonly ProvisioningService _provisioningService;
+    private readonly IProvisioningService _provisioningService;
     private readonly ILogger<TenantsController> _logger;
 
     public TenantsController(
         IDbContextFactory<TenantCatalogDbContext> catalogFactory,
         ClerkOrganizationService clerkService,
-        ProvisioningService provisioningService,
+        IProvisioningService provisioningService,
         ILogger<TenantsController> logger)
     {
         _catalogFactory = catalogFactory;
