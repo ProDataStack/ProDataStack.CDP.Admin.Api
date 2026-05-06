@@ -470,6 +470,61 @@ public class TenantsController : ControllerBase
         return Accepted(new { jobId = job.Id, status = job.Status });
     }
 
+    /// <summary>
+    /// Retry a failed tenant provision. Re-dispatches the same workflow with the same
+    /// tenant id so terraform picks up existing state. Idempotent — terraform won't
+    /// re-create resources that exist; identity grants use IF NOT EXISTS.
+    ///
+    /// Only allowed when ProvisioningStatus is Error. Use this instead of Delete +
+    /// Create when a transient failure leaves a tenant in Error state — preserves the
+    /// Clerk org and any user memberships.
+    /// </summary>
+    [HttpPost("{id:guid}/retry-provision")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<ActionResult> RetryProvision(Guid id)
+    {
+        await using var db = await _catalogFactory.CreateDbContextAsync();
+        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
+
+        if (tenant == null)
+            return NotFound();
+
+        if (tenant.ProvisioningStatus != ProvisioningStatus.Error)
+            return BadRequest(new { error = $"Retry only allowed when status is Error. Current: {tenant.ProvisioningStatus}" });
+
+        var slug = GenerateSlug(tenant.Name);
+
+        // Optimistic flip back to Pending so the UI shows immediate feedback. The
+        // workflow itself moves the row through Provisioning to Ready/Error. Rolled
+        // back below if dispatch fails so the UI doesn't show false hope.
+        tenant.ProvisioningStatus = ProvisioningStatus.Pending;
+        tenant.ProvisioningError = null;
+        tenant.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        try
+        {
+            await _provisioningService.TriggerProvisioningAsync(slug, id);
+            _logger.LogInformation("Retried provisioning for {Name} ({Id})", tenant.Name, id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to retry provisioning for {Name} ({Id})", tenant.Name, id);
+
+            tenant.ProvisioningStatus = ProvisioningStatus.Error;
+            tenant.ProvisioningError = "Retry dispatch failed: " + ex.Message;
+            tenant.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Failed to dispatch retry workflow", details = ex.Message });
+        }
+
+        return Accepted(new { status = tenant.ProvisioningStatus.ToString() });
+    }
+
     /// <summary>List jobs for a tenant, most recent first.</summary>
     [HttpGet("{id:guid}/jobs")]
     [ProducesResponseType(StatusCodes.Status200OK)]
