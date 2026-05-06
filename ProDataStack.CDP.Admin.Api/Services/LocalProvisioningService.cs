@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using ProDataStack.CDP.DataModel.Context;
@@ -32,11 +33,13 @@ public class LocalProvisioningService : IProvisioningService
     {
         var (masterCs, tenantCs, dbName) = BuildConnectionStrings(tenantSlug);
 
+        var quotedDb = QuoteDbIdentifier(dbName);
+
         await using (var conn = new SqlConnection(masterCs))
         {
             await conn.OpenAsync();
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"IF DB_ID(@n) IS NULL CREATE DATABASE [{dbName}]";
+            cmd.CommandText = $"IF DB_ID(@n) IS NULL CREATE DATABASE {quotedDb}";
             cmd.Parameters.AddWithValue("@n", dbName);
             await cmd.ExecuteNonQueryAsync();
         }
@@ -67,14 +70,16 @@ public class LocalProvisioningService : IProvisioningService
     public async Task TriggerDestroyAsync(string tenantSlug)
     {
         var (masterCs, _, dbName) = BuildConnectionStrings(tenantSlug);
+        var quotedDb = QuoteDbIdentifier(dbName);
+
         await using var conn = new SqlConnection(masterCs);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $@"
 IF DB_ID(@n) IS NOT NULL
 BEGIN
-    ALTER DATABASE [{dbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE [{dbName}];
+    ALTER DATABASE {quotedDb} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE {quotedDb};
 END";
         cmd.Parameters.AddWithValue("@n", dbName);
         await cmd.ExecuteNonQueryAsync();
@@ -110,8 +115,6 @@ END";
         await catalog.SaveChangesAsync();
     }
 
-    // Slug is sanitised to [a-z0-9-] in TenantsController.GenerateSlug, so direct
-    // interpolation into CREATE/DROP DATABASE is safe (DB names cannot be parameterised).
     private (string MasterCs, string TenantCs, string DbName) BuildConnectionStrings(string tenantSlug)
     {
         var catalogCs = _configuration.GetConnectionString("TenantCatalog")
@@ -122,5 +125,24 @@ END";
         var masterCs = builder.ConnectionString;
         builder.InitialCatalog = dbName;
         return (masterCs, builder.ConnectionString, dbName);
+    }
+
+    // DB names can't be parameterised in T-SQL, so identifiers must be interpolated.
+    // Slugs reaching here are already sanitised by TenantsController.GenerateSlug, but
+    // we re-validate locally so this file's DDL safety doesn't depend on a regex
+    // defined in another class. Plus a defensive ]-double-up in case the contract
+    // ever shifts.
+    private static readonly Regex DbNamePattern = new(
+        @"^cdp-tenant-[a-z0-9-]{1,50}$",
+        RegexOptions.Compiled);
+
+    private static string QuoteDbIdentifier(string dbName)
+    {
+        if (!DbNamePattern.IsMatch(dbName))
+            throw new ArgumentException(
+                $"Refusing to use '{dbName}' as a SQL identifier — must match {DbNamePattern}",
+                nameof(dbName));
+
+        return "[" + dbName.Replace("]", "]]") + "]";
     }
 }
