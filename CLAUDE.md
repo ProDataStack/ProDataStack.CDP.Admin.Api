@@ -28,6 +28,12 @@ The Admin API uses Clerk JWT auth with `org_id` claims. Platform administrators 
 5. Pipeline creates dedicated SQL Server + DB, grants managed identity access, runs migrations
 6. Tenant status set to `Ready`
 
+### Local development
+
+When `ASPNETCORE_ENVIRONMENT=Development`, `Startup.cs` swaps `ProvisioningService` for `LocalProvisioningService`, which drives the local SQL Server directly instead of dispatching GitHub workflows: `CREATE DATABASE [cdp-tenant-{slug}]`, applies `CdpDbContext` migrations inline, writes the connection string back to the catalog row, and flips status to `Ready` before the POST returns. Migrate runs `Database.MigrateAsync` directly and updates the `TenantJobs` row in-process. Destroy issues `SET SINGLE_USER WITH ROLLBACK IMMEDIATE` then `DROP DATABASE`. Identity grants are skipped (everything connects as `sa`).
+
+**Prereq**: local SQL Server reachable on `localhost` with the credentials in `appsettings.json`.
+
 ## Infrastructure
 
 - **Resource group**: `cdp-admin-api`
