@@ -15,7 +15,7 @@ Platform administration service for the Customer Data Platform. Manages tenants,
 
 ## Auth Model
 
-See `CDP/iterations/1/CDP-ADMIN-AUTH.md` in the planning repo for the full auth specification.
+See `CDP/features/admin-app/CDP-ADMIN-AUTH.md` in the planning repo for the full auth specification.
 
 The Admin API uses Clerk JWT auth with `org_id` claims. Platform administrators are identified by their Clerk `org:admin` role. The Admin app is a separate Clerk application from the tenant-facing CDP app.
 
@@ -59,4 +59,4 @@ The I2 DataModel NuGet (1.0.x) ships:
 
 The **Migrate** button in cdp-admin (which dispatches `migrate-and-grant-tenant.yml` in TenantProvisioning) now applies pending migrations AND grants every service identity in one click — see `CDP/CLAUDE.md` notes #8 and #10. Admin API's `MigrateTenant` endpoint dispatches that workflow rather than running EF inline (privilege boundary).
 
-Full spec: `CDP/iterations/2/ITERATION-2-TICKETS.md` § Epic 1 and § DataModel NuGet Changes Required. Decision rationale: `CDP/CLAUDE.md` note #11.
+Full spec: `CDP/features/connectors/README.md`; DataModel NuGet dependency chain in `CDP/CLAUDE.md` note #10. Decision rationale: `CDP/CLAUDE.md` note #11.
