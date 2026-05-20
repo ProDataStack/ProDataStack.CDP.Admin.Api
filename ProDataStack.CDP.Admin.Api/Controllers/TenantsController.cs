@@ -487,23 +487,24 @@ public class TenantsController : ControllerBase
     public async Task<ActionResult> RetryProvision(Guid id)
     {
         await using var db = await _catalogFactory.CreateDbContextAsync();
-        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
 
         if (tenant == null)
             return NotFound();
 
-        if (tenant.ProvisioningStatus != ProvisioningStatus.Error)
-            return BadRequest(new { error = $"Retry only allowed when status is Error. Current: {tenant.ProvisioningStatus}" });
-
         var slug = GenerateSlug(tenant.Name);
 
-        // Optimistic flip back to Pending so the UI shows immediate feedback. The
-        // workflow itself moves the row through Provisioning to Ready/Error. Rolled
-        // back below if dispatch fails so the UI doesn't show false hope.
-        tenant.ProvisioningStatus = ProvisioningStatus.Pending;
-        tenant.ProvisioningError = null;
-        tenant.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
+        // Atomic Error -> Pending. If rowcount is 0 the row isn't in Error
+        // (already retrying, already Ready, deleted, etc.) — no race window.
+        var rowsAffected = await db.Tenants
+            .Where(t => t.Id == id && t.ProvisioningStatus == ProvisioningStatus.Error)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.ProvisioningStatus, ProvisioningStatus.Pending)
+                .SetProperty(t => t.ProvisioningError, (string?)null)
+                .SetProperty(t => t.UpdatedAt, DateTimeOffset.UtcNow));
+
+        if (rowsAffected == 0)
+            return BadRequest(new { error = $"Retry only allowed when status is Error. Current: {tenant.ProvisioningStatus}" });
 
         try
         {
@@ -514,15 +515,19 @@ public class TenantsController : ControllerBase
         {
             _logger.LogError(ex, "Failed to retry provisioning for {Name} ({Id})", tenant.Name, id);
 
-            tenant.ProvisioningStatus = ProvisioningStatus.Error;
-            tenant.ProvisioningError = "Retry dispatch failed: " + ex.Message;
-            tenant.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
+            // Best-effort rollback. If another retry has already moved the row
+            // past Pending, rowcount is 0 — fine, the workflow is idempotent.
+            await db.Tenants
+                .Where(t => t.Id == id && t.ProvisioningStatus == ProvisioningStatus.Pending)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.ProvisioningStatus, ProvisioningStatus.Error)
+                    .SetProperty(t => t.ProvisioningError, "Retry dispatch failed (see logs)")
+                    .SetProperty(t => t.UpdatedAt, DateTimeOffset.UtcNow));
 
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Failed to dispatch retry workflow", details = ex.Message });
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Failed to dispatch retry workflow" });
         }
 
-        return Accepted(new { status = tenant.ProvisioningStatus.ToString() });
+        return Accepted(new { status = ProvisioningStatus.Pending.ToString() });
     }
 
     /// <summary>List jobs for a tenant, most recent first.</summary>
